@@ -8,7 +8,7 @@ aks_subnet_cidr      = "10.240.0.0/16"
 services_subnet_cidr = "10.241.0.0/16"
 
 # AKS
-kubernetes_version  = "1.29"
+kubernetes_version  = "1.33.11"
 system_node_vm_size = "Standard_D2s_v3"
 user_node_vm_size   = "Standard_D2s_v3"   # más pequeño en dev
 user_node_min_count = 1
