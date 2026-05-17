@@ -1,0 +1,34 @@
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfvars.backup
+.terraform.lock.hcl
+crash.log
+override.tf
+override.tf.json
+
+# Secrets - NEVER commit these
+*.pem
+*.key
+kubeconfig
+*.kubeconfig
+.env
+.env.*
+
+# Ansible
+ansible/inventory/hosts.ini
+*.retry
+
+# Node.js
+app/api/node_modules/
+app/api/dist/
+app/api/.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
