@@ -1,0 +1,124 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: production
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      securityContext:
+        fsGroup: 999
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: DB_NAME
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: DB_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: DB_PASSWORD
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "apiuser", "-d", "itemsdb"]
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "apiuser", "-d", "itemsdb"]
+            initialDelaySeconds: 45
+            periodSeconds: 10
+            failureThreshold: 6
+          # FIX: postgres necesita CHOWN para inicializar su datadir
+          # No podemos hacer drop ALL en containers con DBs
+          securityContext:
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+            - name: init-script
+              mountPath: /docker-entrypoint-initdb.d
+      tolerations:
+        - key: "workload"
+          operator: "Equal"
+          value: "user"
+          effect: "NoSchedule"
+      volumes:
+        - name: postgres-data
+          persistentVolumeClaim:
+            claimName: postgres-pvc
+        - name: init-script
+          configMap:
+            name: postgres-init
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  namespace: production
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: "managed-csi"
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  namespace: production
+data:
+  init.sql: |
+    CREATE TABLE IF NOT EXISTS items (
+      id          SERIAL PRIMARY KEY,
+      name        VARCHAR(255) NOT NULL,
+      description TEXT,
+      created_at  TIMESTAMP DEFAULT NOW()
+    );
+    INSERT INTO items (name, description) VALUES
+      ('Item Alpha', 'First demo item'),
+      ('Item Beta',  'Second demo item'),
+      ('Item Gamma', 'Third demo item')
+    ON CONFLICT DO NOTHING;
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-service
+  namespace: production
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+  type: ClusterIP
