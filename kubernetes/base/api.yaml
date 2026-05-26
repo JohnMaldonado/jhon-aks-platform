@@ -24,7 +24,7 @@ spec:
       containers:
         - name: api
           # AP-03: tag específico con git SHA
-          image: jhonacrdev.azurecr.io/api:84bc680
+          image: jhonacrdev.azurecr.io/api:b95b870
           ports:
             - containerPort: 3000
           # AP-06: credenciales desde Secret
