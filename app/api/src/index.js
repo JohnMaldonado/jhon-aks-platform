@@ -21,11 +21,11 @@ const pool = new Pool({
 });
 
 // ─── Health endpoints (AP-02: requeridos para liveness y readiness probes) ──
-app.get('/healthz/live', (req, res) => {
+app.get('/health/live', (req, res) => {
   res.status(200).json({ status: 'alive', timestamp: new Date().toISOString() });
 });
 
-app.get('/healthz/ready', async (req, res) => {
+app.get('/health/ready', async (req, res) => {
   try {
     await pool.query('SELECT 1');
     res.status(200).json({ status: 'ready', db: 'connected' });
