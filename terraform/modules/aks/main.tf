@@ -100,9 +100,13 @@ resource "azurerm_log_analytics_workspace" "main" {
   tags                = var.tags
 }
 
+
 terraform {
   required_version = ">= 1.7.0"
   required_providers {
-    azurerm = { source = "hashicorp/azurerm" }
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = "~> 3.100"
+    }
   }
 }
