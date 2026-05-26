@@ -8,15 +8,67 @@ on:
 
 env:
   ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
+  ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
 
 jobs:
+  terraform-lint:
+    name: Terraform Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup TFLint
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: v0.50.0
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.0"
+
+      - name: Terraform Init (for lint)
+        working-directory: terraform
+        run: |
+          terraform init -backend=false
+
+      - name: TFLint Init
+        working-directory: terraform
+        run: tflint --init
+
+      - name: Run TFLint
+        working-directory: terraform
+        run: tflint --recursive
+
+  ansible-check:
+    name: Ansible Dry Run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Ansible
+        run: |
+          pip install ansible kubernetes
+          ansible-galaxy collection install kubernetes.core
+
+      - name: Ansible syntax check
+        run: |
+          ansible-playbook ansible/playbooks/bootstrap.yml \
+            -i ansible/inventory/aks.yml \
+            --syntax-check
+
   build-and-scan:
     name: Build, Push and Scan
     runs-on: ubuntu-latest
+    needs: [terraform-lint, ansible-check]
+    outputs:
+      image_tag: ${{ steps.tag.outputs.IMAGE_TAG }}
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Azure Login
         uses: azure/login@v1
@@ -51,10 +103,64 @@ jobs:
         with:
           image-ref: ${{ env.ACR_LOGIN_SERVER }}/api:${{ steps.tag.outputs.IMAGE_TAG }}
           format: table
-          exit-code: 0
-          severity: CRITICAL,HIGH
+          exit-code: 1
+          severity: CRITICAL
 
       - name: Summary
         run: |
           echo "## CI Result" >> $GITHUB_STEP_SUMMARY
-          echo "✅ Image built and pushed: \`${{ env.ACR_LOGIN_SERVER }}/api:${{ steps.tag.outputs.IMAGE_TAG }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Image: \`${{ env.ACR_LOGIN_SERVER }}/api:${{ steps.tag.outputs.IMAGE_TAG }}\`" >> $GITHUB_STEP_SUMMARY
+
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: [build-and-scan]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: |
+            {
+              "clientId": "${{ secrets.AZURE_CLIENT_ID }}",
+              "clientSecret": "${{ secrets.AZURE_CLIENT_SECRET }}",
+              "subscriptionId": "${{ secrets.AZURE_SUBSCRIPTION_ID }}",
+              "tenantId": "${{ secrets.AZURE_TENANT_ID }}"
+            }
+
+      - name: Get AKS credentials
+        run: |
+          az aks get-credentials \
+            --resource-group ${{ secrets.AKS_RESOURCE_GROUP }} \
+            --name ${{ secrets.AKS_CLUSTER_NAME }} \
+            --overwrite-existing
+
+      - name: Get Ingress IP
+        id: ingress
+        run: |
+          IP=$(kubectl get ingress api-ingress -n production \
+            -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          echo "API_URL=http://$IP" >> $GITHUB_OUTPUT
+          echo "Ingress IP: $IP"
+
+      - name: Install test dependencies
+        working-directory: app/api
+        run: npm install
+
+      - name: Run integration tests
+        working-directory: app/api
+        env:
+          API_URL: ${{ steps.ingress.outputs.API_URL }}
+        run: npm test
+
+      - name: Summary
+        run: |
+          echo "## Integration Tests" >> $GITHUB_STEP_SUMMARY
+          echo "✅ All tests passed against \`${{ steps.ingress.outputs.API_URL }}\`" >> $GITHUB_STEP_SUMMARY
