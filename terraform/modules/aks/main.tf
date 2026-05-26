@@ -99,3 +99,10 @@ resource "azurerm_log_analytics_workspace" "main" {
   retention_in_days   = 30
   tags                = var.tags
 }
+
+terraform {
+  required_version = ">= 1.7.0"
+  required_providers {
+    azurerm = { source = "hashicorp/azurerm" }
+  }
+}

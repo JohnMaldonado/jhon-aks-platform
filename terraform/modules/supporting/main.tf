@@ -7,3 +7,10 @@ resource "azurerm_container_registry" "main" {
   admin_enabled       = false   # AP-04: nunca admin credentials, usar managed identity
   tags                = var.tags
 }
+
+terraform {
+  required_version = ">= 1.7.0"
+  required_providers {
+    azurerm = { source = "hashicorp/azurerm" }
+  }
+}

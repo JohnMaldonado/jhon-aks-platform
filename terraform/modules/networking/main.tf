@@ -55,3 +55,10 @@ resource "azurerm_subnet_network_security_group_association" "aks" {
   subnet_id                 = azurerm_subnet.aks.id
   network_security_group_id = azurerm_network_security_group.aks.id
 }
+
+terraform {
+  required_version = ">= 1.7.0"
+  required_providers {
+    azurerm = { source = "hashicorp/azurerm" }
+  }
+}
