@@ -7,6 +7,12 @@ on:
         description: "Type DESTROY to confirm"
         required: true
 
+env:
+  ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+
 jobs:
   destroy:
     name: Terraform Destroy
@@ -33,8 +39,7 @@ jobs:
           az aks nodepool delete \
             --cluster-name ${{ secrets.AKS_CLUSTER_NAME }} \
             --resource-group ${{ secrets.AKS_RESOURCE_GROUP }} \
-            --name user \
-            --no-wait || true
+            --name user || true
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
