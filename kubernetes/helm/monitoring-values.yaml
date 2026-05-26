@@ -1,0 +1,54 @@
+grafana:
+  adminPassword: Admin1234!
+  tolerations:
+    - key: workload
+      operator: Equal
+      value: user
+      effect: NoSchedule
+
+prometheus:
+  prometheusSpec:
+    retention: 7d
+    tolerations:
+      - key: workload
+        operator: Equal
+        value: user
+        effect: NoSchedule
+
+alertmanager:
+  alertmanagerSpec:
+    tolerations:
+      - key: workload
+        operator: Equal
+        value: user
+        effect: NoSchedule
+
+prometheusOperator:
+  tolerations:
+    - key: workload
+      operator: Equal
+      value: user
+      effect: NoSchedule
+  admissionWebhooks:
+    patch:
+      tolerations:
+        - key: workload
+          operator: Equal
+          value: user
+          effect: NoSchedule
+    certManager:
+      enabled: false
+
+kube-state-metrics:
+  tolerations:
+    - key: workload
+      operator: Equal
+      value: user
+      effect: NoSchedule
+
+nodeExporter:
+  tolerations:
+    - key: workload
+      operator: Equal
+      value: user
+      effect: NoSchedule

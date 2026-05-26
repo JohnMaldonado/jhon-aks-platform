@@ -1,0 +1,60 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: api-alerts
+  namespace: production
+  labels:
+    release: monitoring    # debe coincidir con el release name de helm
+spec:
+  groups:
+    - name: api.rules
+      interval: 30s
+      rules:
+
+        # Alerta 1: API completamente caída
+        - alert: ApiDown
+          expr: |
+            absent(up{namespace="production", pod=~"api-.*"})
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "API is down"
+            description: "No API pods have been running in production for more than 1 minute."
+
+        # Alerta 2: Alta tasa de errores 5xx
+        - alert: ApiHighErrorRate
+          expr: |
+            sum(rate(nginx_ingress_controller_requests{namespace="production",status=~"5.."}[5m]))
+            /
+            sum(rate(nginx_ingress_controller_requests{namespace="production"}[5m])) > 0.05
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High error rate on API"
+            description: "More than 5% of requests are returning 5xx errors."
+
+        # Alerta 3: Pods reiniciando frecuentemente
+        - alert: ApiPodCrashLooping
+          expr: |
+            rate(kube_pod_container_status_restarts_total{namespace="production", pod=~"api-.*"}[15m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "API pod is crash looping"
+            description: "Pod {{ $labels.pod }} has been restarting repeatedly."
+
+        # Alerta 4: CPU alto en pods de API
+        - alert: ApiHighCPU
+          expr: |
+            sum(rate(container_cpu_usage_seconds_total{namespace="production", pod=~"api-.*"}[5m])) by (pod)
+            /
+            sum(kube_pod_container_resource_limits{namespace="production", pod=~"api-.*", resource="cpu"}) by (pod) > 0.8
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "API pod CPU usage is high"
+            description: "Pod {{ $labels.pod }} is using more than 80% of its CPU limit."
