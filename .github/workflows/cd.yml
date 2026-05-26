@@ -58,6 +58,93 @@ jobs:
             --name ${{ secrets.AKS_CLUSTER_NAME }} \
             --overwrite-existing
 
+      # ─── AcrPull role ────────────────────────────────────────────────────────
+      - name: Assign AcrPull to AKS kubelet identity
+        run: |
+          KUBELET_ID=$(az aks show \
+            --name ${{ secrets.AKS_CLUSTER_NAME }} \
+            --resource-group ${{ secrets.AKS_RESOURCE_GROUP }} \
+            --query "identityProfile.kubeletidentity.objectId" -o tsv)
+
+          ACR_ID=$(az acr show \
+            --name jhonacrdev \
+            --resource-group ${{ secrets.AKS_RESOURCE_GROUP }} \
+            --query "id" -o tsv)
+
+          az role assignment create \
+            --assignee $KUBELET_ID \
+            --role AcrPull \
+            --scope $ACR_ID || true
+
+      # ─── Setup Helm repos ────────────────────────────────────────────────────
+      - name: Setup Helm repos
+        run: |
+          helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+          helm repo add jetstack https://charts.jetstack.io
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo update
+
+      # ─── Namespaces ──────────────────────────────────────────────────────────
+      - name: Create namespaces
+        run: |
+          for ns in production staging monitoring ingress-nginx cert-manager; do
+            kubectl create namespace $ns --dry-run=client -o yaml | kubectl apply -f -
+          done
+
+      # ─── ingress-nginx ───────────────────────────────────────────────────────
+      - name: Install or upgrade ingress-nginx
+        run: |
+          helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+            --namespace ingress-nginx \
+            --wait --timeout 8m0s \
+            --set controller.replicaCount=2 \
+            --set controller.tolerations[0].key=workload \
+            --set controller.tolerations[0].operator=Equal \
+            --set controller.tolerations[0].value=user \
+            --set controller.tolerations[0].effect=NoSchedule \
+            --set controller.admissionWebhooks.patch.tolerations[0].key=workload \
+            --set controller.admissionWebhooks.patch.tolerations[0].operator=Equal \
+            --set controller.admissionWebhooks.patch.tolerations[0].value=user \
+            --set controller.admissionWebhooks.patch.tolerations[0].effect=NoSchedule \
+            --set controller.resources.requests.cpu=100m \
+            --set controller.resources.requests.memory=128Mi \
+            --set controller.resources.limits.cpu=500m \
+            --set controller.resources.limits.memory=512Mi \
+            --set controller.service.annotations."service\.beta\.kubernetes\.io/azure-load-balancer-health-probe-request-path"=/healthz/ready
+
+      # ─── cert-manager ────────────────────────────────────────────────────────
+      - name: Install or upgrade cert-manager
+        run: |
+          helm upgrade --install cert-manager jetstack/cert-manager \
+            --namespace cert-manager \
+            --wait --timeout 8m0s \
+            --set installCRDs=true \
+            --set tolerations[0].key=workload \
+            --set tolerations[0].operator=Equal \
+            --set tolerations[0].value=user \
+            --set tolerations[0].effect=NoSchedule \
+            --set webhook.tolerations[0].key=workload \
+            --set webhook.tolerations[0].operator=Equal \
+            --set webhook.tolerations[0].value=user \
+            --set webhook.tolerations[0].effect=NoSchedule \
+            --set cainjector.tolerations[0].key=workload \
+            --set cainjector.tolerations[0].operator=Equal \
+            --set cainjector.tolerations[0].value=user \
+            --set cainjector.tolerations[0].effect=NoSchedule \
+            --set startupapicheck.tolerations[0].key=workload \
+            --set startupapicheck.tolerations[0].operator=Equal \
+            --set startupapicheck.tolerations[0].value=user \
+            --set startupapicheck.tolerations[0].effect=NoSchedule
+
+      # ─── monitoring ──────────────────────────────────────────────────────────
+      - name: Install or upgrade monitoring
+        run: |
+          helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
+            --namespace monitoring \
+            --wait --timeout 10m0s \
+            -f kubernetes/helm/monitoring-values.yaml
+
+      # ─── App manifests ───────────────────────────────────────────────────────
       - name: Set image tag
         id: tag
         run: echo "IMAGE_TAG=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
@@ -67,18 +154,19 @@ jobs:
           sed -i "s|${{ env.ACR_LOGIN_SERVER }}/api:.*|${{ env.ACR_LOGIN_SERVER }}/api:${{ steps.tag.outputs.IMAGE_TAG }}|g" \
             kubernetes/base/api.yaml
 
-      - name: Deploy to AKS
+      - name: Deploy app to AKS
         run: |
           kubectl apply -f kubernetes/base/
           kubectl rollout status deployment/api -n production --timeout=5m
 
+      # ─── Smoke test ──────────────────────────────────────────────────────────
       - name: Smoke test
         run: |
+          sleep 30
           INGRESS_IP=$(kubectl get ingress api-ingress -n production \
             -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
           echo "Ingress IP: $INGRESS_IP"
-          sleep 10
-          curl -f http://$INGRESS_IP/healthz/live || exit 1
+          curl -f http://$INGRESS_IP/health/live || exit 1
           curl -f http://$INGRESS_IP/api/items || exit 1
           echo "Smoke test passed"
 
