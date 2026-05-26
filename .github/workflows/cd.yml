@@ -1,0 +1,84 @@
+name: CD — Deploy to AKS
+
+on:
+  workflow_run:
+    workflows: ["CI — Build and Scan"]
+    types: [completed]
+    branches: [main]
+
+env:
+  ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
+
+jobs:
+  deploy:
+    name: Deploy to AKS
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: |
+            {
+              "clientId": "${{ secrets.AZURE_CLIENT_ID }}",
+              "clientSecret": "${{ secrets.AZURE_CLIENT_SECRET }}",
+              "subscriptionId": "${{ secrets.AZURE_SUBSCRIPTION_ID }}",
+              "tenantId": "${{ secrets.AZURE_TENANT_ID }}"
+            }
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.0"
+
+      - name: Terraform Init
+        working-directory: terraform
+        run: |
+          terraform init \
+            -backend-config="storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}"
+
+      - name: Terraform Apply
+        working-directory: terraform
+        run: |
+          terraform apply -auto-approve \
+            -var-file="../terraform/environments/dev/terraform.tfvars"
+
+      - name: Get AKS credentials
+        run: |
+          az aks get-credentials \
+            --resource-group ${{ secrets.AKS_RESOURCE_GROUP }} \
+            --name ${{ secrets.AKS_CLUSTER_NAME }} \
+            --overwrite-existing
+
+      - name: Set image tag
+        id: tag
+        run: echo "IMAGE_TAG=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+
+      - name: Update image tag in manifest
+        run: |
+          sed -i "s|${{ env.ACR_LOGIN_SERVER }}/api:.*|${{ env.ACR_LOGIN_SERVER }}/api:${{ steps.tag.outputs.IMAGE_TAG }}|g" \
+            kubernetes/base/api.yaml
+
+      - name: Deploy to AKS
+        run: |
+          kubectl apply -f kubernetes/base/
+          kubectl rollout status deployment/api -n production --timeout=5m
+
+      - name: Smoke test
+        run: |
+          INGRESS_IP=$(kubectl get ingress api-ingress -n production \
+            -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          echo "Ingress IP: $INGRESS_IP"
+          sleep 10
+          curl -f http://$INGRESS_IP/healthz/live || exit 1
+          curl -f http://$INGRESS_IP/api/items || exit 1
+          echo "Smoke test passed"
+
+      - name: Summary
+        run: |
+          echo "## CD Result" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Deployed: \`${{ env.ACR_LOGIN_SERVER }}/api:${{ steps.tag.outputs.IMAGE_TAG }}\`" >> $GITHUB_STEP_SUMMARY
