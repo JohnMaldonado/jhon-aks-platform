@@ -76,7 +76,7 @@ jobs:
             --role AcrPull \
             --scope $ACR_ID || true
 
-      # ─── Setup Helm repos ────────────────────────────────────────────────────
+      # ─── Helm repos ──────────────────────────────────────────────────────────
       - name: Setup Helm repos
         run: |
           helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
@@ -144,7 +144,7 @@ jobs:
             --wait --timeout 10m0s \
             -f kubernetes/helm/monitoring-values.yaml
 
-      # ─── App manifests ───────────────────────────────────────────────────────
+      # ─── Deploy ──────────────────────────────────────────────────────────────
       - name: Set image tag
         id: tag
         run: echo "IMAGE_TAG=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
@@ -154,13 +154,35 @@ jobs:
           sed -i "s|${{ env.ACR_LOGIN_SERVER }}/api:.*|${{ env.ACR_LOGIN_SERVER }}/api:${{ steps.tag.outputs.IMAGE_TAG }}|g" \
             kubernetes/base/api.yaml
 
-      - name: Deploy app to AKS
+      - name: Save previous revision for rollback
+        id: revision
         run: |
-          kubectl apply -f kubernetes/base/
-          kubectl rollout status deployment/api -n production --timeout=5m
+          PREV=$(kubectl get deployment api -n production \
+            -o jsonpath='{.metadata.annotations.deployment\.kubernetes\.io/revision}' 2>/dev/null || echo "0")
+          echo "PREV_REVISION=$PREV" >> $GITHUB_OUTPUT
+          echo "Previous revision: $PREV"
 
-      # ─── Smoke test ──────────────────────────────────────────────────────────
+      - name: Apply manifests
+        run: kubectl apply -f kubernetes/base/
+
+      - name: Wait for rollout
+        id: rollout
+        run: |
+          kubectl rollout status deployment/api -n production --timeout=5m
+        continue-on-error: true
+
+      # ─── Rollback si el rollout falló ─────────────────────────────────────────
+      - name: Rollback on rollout failure
+        if: steps.rollout.outcome == 'failure'
+        run: |
+          echo "Rollout failed — rolling back to previous revision"
+          kubectl rollout undo deployment/api -n production
+          kubectl rollout status deployment/api -n production --timeout=3m
+          echo "ROLLBACK_TRIGGERED=true" >> $GITHUB_ENV
+
       - name: Smoke test
+        id: smoke
+        if: steps.rollout.outcome == 'success'
         run: |
           sleep 30
           INGRESS_IP=$(kubectl get ingress api-ingress -n production \
@@ -169,8 +191,30 @@ jobs:
           curl -f http://$INGRESS_IP/health/live || exit 1
           curl -f http://$INGRESS_IP/api/items || exit 1
           echo "Smoke test passed"
+        continue-on-error: true
 
-      - name: Summary
+      # ─── Rollback si el smoke test falló ──────────────────────────────────────
+      - name: Rollback on smoke test failure
+        if: steps.smoke.outcome == 'failure' && steps.rollout.outcome == 'success'
         run: |
-          echo "## CD Result" >> $GITHUB_STEP_SUMMARY
-          echo "✅ Deployed: \`${{ env.ACR_LOGIN_SERVER }}/api:${{ steps.tag.outputs.IMAGE_TAG }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "Smoke test failed — rolling back deployment"
+          kubectl rollout undo deployment/api -n production
+          kubectl rollout status deployment/api -n production --timeout=3m
+          echo "ROLLBACK_TRIGGERED=true" >> $GITHUB_ENV
+
+      # ─── Summary ─────────────────────────────────────────────────────────────
+      - name: Summary
+        if: always()
+        run: |
+          if [ "${ROLLBACK_TRIGGERED}" = "true" ]; then
+            echo "## ❌ Deploy failed — rolled back" >> $GITHUB_STEP_SUMMARY
+            echo "Image \`${{ env.ACR_LOGIN_SERVER }}/api:${{ steps.tag.outputs.IMAGE_TAG }}\` was reverted." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## ✅ Deploy successful" >> $GITHUB_STEP_SUMMARY
+            echo "Deployed: \`${{ env.ACR_LOGIN_SERVER }}/api:${{ steps.tag.outputs.IMAGE_TAG }}\`" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      # ─── Fail el job si hubo rollback ────────────────────────────────────────
+      - name: Fail if rollback was triggered
+        if: env.ROLLBACK_TRIGGERED == 'true'
+        run: exit 1
