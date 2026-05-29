@@ -70,12 +70,36 @@ jobs:
         id: tag
         run: echo "IMAGE_TAG=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
 
-      - name: Build image with Docker (amd64)
+      # Cache de las capas de Docker — si el Dockerfile o package.json
+      # no cambiaron, reutiliza las capas del build anterior
+      # Resultado: builds pasan de ~2min a ~30seg cuando solo cambia el código
+      - name: Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ hashFiles('app/api/package.json', 'app/api/Dockerfile') }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (amd64) with cache
+        uses: docker/build-push-action@v5
+        with:
+          context: ./app/api
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: api:${{ steps.tag.outputs.IMAGE_TAG }}
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
+
+      # Evita que el cache crezca indefinidamente
+      - name: Rotate cache
         run: |
-          docker build \
-            --platform linux/amd64 \
-            -t api:${{ steps.tag.outputs.IMAGE_TAG }} \
-            app/api/
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
 
       - name: Scan image with Trivy
         uses: aquasecurity/trivy-action@master
