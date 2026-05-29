@@ -207,6 +207,21 @@ jobs:
           echo "Smoke test passed"
         continue-on-error: true
 
+      - name: Deploy to staging
+        if: steps.smoke.outcome == 'success'
+        run: |
+          kubectl create secret docker-registry acr-secret \
+            --namespace staging \
+            --docker-server=${{ env.ACR_LOGIN_SERVER }} \
+            --docker-username=$(az acr credential show --name jhonacrdev --query username -o tsv) \
+            --docker-password=$(az acr credential show --name jhonacrdev --query passwords[0].value -o tsv) \
+            --dry-run=client -o yaml | kubectl apply -f -
+          kubectl apply -f kubernetes/base/postgres-secret-staging.yaml
+          kubectl apply -f kubernetes/base/api-staging.yaml
+          kubectl rollout status deployment/api -n staging --timeout=3m
+          echo "## Staging deploy" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Staging updated with `api:${{ steps.tag.outputs.IMAGE_TAG }}`" >> $GITHUB_STEP_SUMMARY
+
       - name: Rollback on smoke test failure
         if: steps.smoke.outcome == 'failure' && steps.rollout.outcome == 'success'
         run: |
@@ -227,3 +242,4 @@ jobs:
       - name: Fail if rollback was triggered
         if: env.ROLLBACK_TRIGGERED == 'true'
         run: exit 1
+# Este bloque NO va al final del archivo — ver instrucción abajo
