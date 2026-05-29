@@ -114,6 +114,31 @@ jobs:
             --set controller.resources.limits.memory=512Mi \
             --set controller.service.annotations."service\.beta\.kubernetes\.io/azure-load-balancer-health-probe-request-path"=/healthz/ready
 
+
+      - name: Fix LB health probe to TCP
+        run: |
+          NODE_RG=$(az aks show \
+            --name ${{ secrets.AKS_CLUSTER_NAME }} \
+            --resource-group ${{ secrets.AKS_RESOURCE_GROUP }} \
+            --query nodeResourceGroup -o tsv)
+
+          sleep 30
+
+          PROBE_NAME=$(az network lb probe list \
+            --resource-group $NODE_RG \
+            --lb-name kubernetes \
+            --query "[?contains(name, 'TCP-80')].name" -o tsv 2>/dev/null || echo "")
+
+          if [ -n "$PROBE_NAME" ]; then
+            az network lb probe update \
+              --resource-group $NODE_RG \
+              --lb-name kubernetes \
+              --name $PROBE_NAME \
+              --protocol Tcp \
+              --path "" || true
+            echo "LB probe updated to TCP"
+          fi
+
       # ─── cert-manager ────────────────────────────────────────────────────────
       - name: Install or upgrade cert-manager
         run: |
