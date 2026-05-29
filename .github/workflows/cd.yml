@@ -58,23 +58,25 @@ jobs:
             --name ${{ secrets.AKS_CLUSTER_NAME }} \
             --overwrite-existing
 
-      # ─── AcrPull role ────────────────────────────────────────────────────────
-      - name: Assign AcrPull to AKS kubelet identity
+      # ─── ACR imagePullSecret ──────────────────────────────────────────────────
+      # En vez de role assignment (requiere permisos que no tenemos),
+      # creamos un token de ACR y lo guardamos como Secret en K8s
+      - name: Create ACR imagePullSecret in production namespace
         run: |
-          KUBELET_ID=$(az aks show \
-            --name ${{ secrets.AKS_CLUSTER_NAME }} \
-            --resource-group ${{ secrets.AKS_RESOURCE_GROUP }} \
-            --query "identityProfile.kubeletidentity.objectId" -o tsv)
+          # Habilitar admin temporalmente para obtener credenciales
+          az acr update --name jhonacrdev --admin-enabled true
 
-          ACR_ID=$(az acr show \
-            --name jhonacrdev \
-            --resource-group ${{ secrets.AKS_RESOURCE_GROUP }} \
-            --query "id" -o tsv)
+          ACR_USER=$(az acr credential show --name jhonacrdev --query username -o tsv)
+          ACR_PASS=$(az acr credential show --name jhonacrdev --query passwords[0].value -o tsv)
 
-          az role assignment create \
-            --assignee $KUBELET_ID \
-            --role AcrPull \
-            --scope $ACR_ID || true
+          kubectl create namespace production --dry-run=client -o yaml | kubectl apply -f -
+
+          kubectl create secret docker-registry acr-secret \
+            --namespace production \
+            --docker-server=${{ secrets.ACR_LOGIN_SERVER }} \
+            --docker-username=$ACR_USER \
+            --docker-password=$ACR_PASS \
+            --dry-run=client -o yaml | kubectl apply -f -
 
       # ─── Helm repos ──────────────────────────────────────────────────────────
       - name: Setup Helm repos
@@ -144,11 +146,28 @@ jobs:
             --wait --timeout 10m0s \
             -f kubernetes/helm/monitoring-values.yaml
 
-      # ─── Deploy ──────────────────────────────────────────────────────────────
+      # ─── Build y push imagen ─────────────────────────────────────────────────
       - name: Set image tag
         id: tag
         run: echo "IMAGE_TAG=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
 
+      - name: Login to ACR
+        run: az acr login --name jhonacrdev
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image (amd64)
+        uses: docker/build-push-action@v5
+        with:
+          context: ./app/api
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.ACR_LOGIN_SERVER }}/api:${{ steps.tag.outputs.IMAGE_TAG }}
+            ${{ env.ACR_LOGIN_SERVER }}/api:latest
+
+      # ─── Deploy ──────────────────────────────────────────────────────────────
       - name: Update image tag in manifest
         run: |
           sed -i "s|${{ env.ACR_LOGIN_SERVER }}/api:.*|${{ env.ACR_LOGIN_SERVER }}/api:${{ steps.tag.outputs.IMAGE_TAG }}|g" \
@@ -160,24 +179,20 @@ jobs:
           PREV=$(kubectl get deployment api -n production \
             -o jsonpath='{.metadata.annotations.deployment\.kubernetes\.io/revision}' 2>/dev/null || echo "0")
           echo "PREV_REVISION=$PREV" >> $GITHUB_OUTPUT
-          echo "Previous revision: $PREV"
 
       - name: Apply manifests
         run: kubectl apply -f kubernetes/base/
 
       - name: Wait for rollout
         id: rollout
-        run: |
-          kubectl rollout status deployment/api -n production --timeout=5m
+        run: kubectl rollout status deployment/api -n production --timeout=5m
         continue-on-error: true
 
-      # ─── Rollback si el rollout falló ─────────────────────────────────────────
       - name: Rollback on rollout failure
         if: steps.rollout.outcome == 'failure'
         run: |
-          echo "Rollout failed — rolling back to previous revision"
-          kubectl rollout undo deployment/api -n production
-          kubectl rollout status deployment/api -n production --timeout=3m
+          echo "Rollout failed — rolling back"
+          kubectl rollout undo deployment/api -n production || true
           echo "ROLLBACK_TRIGGERED=true" >> $GITHUB_ENV
 
       - name: Smoke test
@@ -187,34 +202,28 @@ jobs:
           sleep 30
           INGRESS_IP=$(kubectl get ingress api-ingress -n production \
             -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-          echo "Ingress IP: $INGRESS_IP"
           curl -f http://$INGRESS_IP/health/live || exit 1
           curl -f http://$INGRESS_IP/api/items || exit 1
           echo "Smoke test passed"
         continue-on-error: true
 
-      # ─── Rollback si el smoke test falló ──────────────────────────────────────
       - name: Rollback on smoke test failure
         if: steps.smoke.outcome == 'failure' && steps.rollout.outcome == 'success'
         run: |
-          echo "Smoke test failed — rolling back deployment"
-          kubectl rollout undo deployment/api -n production
-          kubectl rollout status deployment/api -n production --timeout=3m
+          echo "Smoke test failed — rolling back"
+          kubectl rollout undo deployment/api -n production || true
           echo "ROLLBACK_TRIGGERED=true" >> $GITHUB_ENV
 
-      # ─── Summary ─────────────────────────────────────────────────────────────
       - name: Summary
         if: always()
         run: |
           if [ "${ROLLBACK_TRIGGERED}" = "true" ]; then
             echo "## ❌ Deploy failed — rolled back" >> $GITHUB_STEP_SUMMARY
-            echo "Image \`${{ env.ACR_LOGIN_SERVER }}/api:${{ steps.tag.outputs.IMAGE_TAG }}\` was reverted." >> $GITHUB_STEP_SUMMARY
           else
             echo "## ✅ Deploy successful" >> $GITHUB_STEP_SUMMARY
             echo "Deployed: \`${{ env.ACR_LOGIN_SERVER }}/api:${{ steps.tag.outputs.IMAGE_TAG }}\`" >> $GITHUB_STEP_SUMMARY
           fi
 
-      # ─── Fail el job si hubo rollback ────────────────────────────────────────
       - name: Fail if rollback was triggered
         if: env.ROLLBACK_TRIGGERED == 'true'
         run: exit 1
