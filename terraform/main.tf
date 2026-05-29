@@ -41,7 +41,6 @@ module "aks" {
 
   kubernetes_version  = var.kubernetes_version
   aks_subnet_id       = module.networking.aks_subnet_id
-  acr_id              = module.supporting.acr_id
 
   system_node_vm_size = var.system_node_vm_size
   user_node_vm_size   = var.user_node_vm_size
