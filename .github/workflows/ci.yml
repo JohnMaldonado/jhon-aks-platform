@@ -70,16 +70,12 @@ jobs:
         id: tag
         run: echo "IMAGE_TAG=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build image locally (amd64)
-        uses: docker/build-push-action@v5
-        with:
-          context: ./app/api
-          platforms: linux/amd64
-          push: false
-          tags: api:${{ steps.tag.outputs.IMAGE_TAG }}
+      - name: Build image with Docker (amd64)
+        run: |
+          docker build \
+            --platform linux/amd64 \
+            -t api:${{ steps.tag.outputs.IMAGE_TAG }} \
+            app/api/
 
       - name: Scan image with Trivy
         uses: aquasecurity/trivy-action@master
@@ -95,4 +91,3 @@ jobs:
           echo "✅ tflint passed" >> $GITHUB_STEP_SUMMARY
           echo "✅ ansible syntax-check passed" >> $GITHUB_STEP_SUMMARY
           echo "✅ Image built and scanned: \`api:${{ steps.tag.outputs.IMAGE_TAG }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "ℹ️ Integration tests run in CD after deploy" >> $GITHUB_STEP_SUMMARY
