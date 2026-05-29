@@ -34,13 +34,38 @@ jobs:
               "tenantId": "${{ secrets.AZURE_TENANT_ID }}"
             }
 
-      - name: Delete AKS node pools first
+      - name: Get AKS credentials
+        run: |
+          az aks get-credentials \
+            --resource-group ${{ secrets.AKS_RESOURCE_GROUP }} \
+            --name ${{ secrets.AKS_CLUSTER_NAME }} \
+            --overwrite-existing 2>/dev/null || echo "Cluster not found — skipping"
+
+      # ─── Paso 1: eliminar PDBs que bloquean el drain ──────────────────────────
+      - name: Delete PDBs to allow node drain
+        run: |
+          kubectl delete pdb --all -n ingress-nginx 2>/dev/null || true
+          kubectl delete pdb --all -n cert-manager 2>/dev/null || true
+          kubectl delete pdb --all -n production 2>/dev/null || true
+          kubectl delete pdb --all -n monitoring 2>/dev/null || true
+          echo "PDBs deleted"
+
+      # ─── Paso 2: escalar ingress-nginx a 0 para liberar el node pool ──────────
+      - name: Scale down ingress-nginx
+        run: |
+          kubectl scale deployment ingress-nginx-controller \
+            -n ingress-nginx --replicas=0 2>/dev/null || true
+          echo "ingress-nginx scaled down"
+
+      # ─── Paso 3: eliminar el node pool ────────────────────────────────────────
+      - name: Delete user node pool
         run: |
           az aks nodepool delete \
             --cluster-name ${{ secrets.AKS_CLUSTER_NAME }} \
             --resource-group ${{ secrets.AKS_RESOURCE_GROUP }} \
-            --name user || true
+            --name user 2>/dev/null || echo "Node pool not found — skipping"
 
+      # ─── Paso 4: Terraform destroy ────────────────────────────────────────────
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
@@ -60,5 +85,5 @@ jobs:
 
       - name: Summary
         run: |
-          echo "## Destroy Complete" >> $GITHUB_STEP_SUMMARY
-          echo "✅ All infrastructure destroyed" >> $GITHUB_STEP_SUMMARY
+          echo "## ✅ Destroy Complete" >> $GITHUB_STEP_SUMMARY
+          echo "All infrastructure destroyed cleanly." >> $GITHUB_STEP_SUMMARY
